@@ -359,6 +359,17 @@
 
       <div id="disp-pill"></div>
 
+      <div style="margin-top:12px; padding-top:11px; border-top:0.5px solid var(--line); display:flex; align-items:baseline; justify-content:space-between;">
+        <div style="font-size:11px; color:var(--gris); line-height:1.4;">
+          Nivel IGN<br>
+          <span style="font-size:10px; color:var(--gris);">hidrómetro + 11,09 m (SRVN71)</span>
+        </div>
+        <div style="display:flex; align-items:baseline; gap:5px;">
+          <span style="font-size:26px; font-weight:500; font-family:'DM Mono',monospace; color:var(--gris);" id="disp-ign">—</span>
+          <span style="font-size:13px; color:var(--gris);">m IGN</span>
+        </div>
+      </div>
+
     </div>
 
     <div class="refs-single">
@@ -429,6 +440,7 @@
 <script>
   const ALERTA_TEC = 4.70;  // único umbral del Salado en Recreo
   const MAX_BAR    = 7;
+  const CERO_IGN   = 11.09; // cero del hidrómetro Recreo en SRVN71
   const ESTACION   = 'Recreo (R.P. 70)';  // texto exacto a buscar en col 0
 
   const CIM_URL = 'http://wfich1.unl.edu.ar/cim/rios/salado/alturas';
@@ -571,6 +583,10 @@
       const cls      = subiendo ? 'c-sube'   : bajando  ? 'p-baja'  : 'p-ok';
       pillEl.innerHTML = `<span class="pill ${cls}"><span class="pill-d"></span>Nivel del río — ${dir}</span>`;
     }
+
+    // IGN
+    const ign = (nivel + CERO_IGN).toFixed(2).replace('.', ',');
+    document.getElementById('disp-ign').textContent = ign;
 
     // Status bar
     const dot = document.getElementById('fecha-dot');
