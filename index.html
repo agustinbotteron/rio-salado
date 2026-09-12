@@ -446,12 +446,14 @@
   const CIM_URL = 'http://wfich1.unl.edu.ar/cim/rios/salado/alturas';
 
   // ── PROXIES EN PARALELO ──────────────────────────────────────────────────────
+  // Worker propio primero — es el único que funciona desde GitHub Pages
+  // Los proxies públicos bloquean requests con Origin: agustinbotteron.github.io
   const PROXIES = [
-    { build: url => `https://api.allorigins.win/raw?url=${encodeURIComponent(url)}`,       isJson: false },
-    { build: url => `https://api.allorigins.win/get?url=${encodeURIComponent(url)}`,       isJson: true,  jsonKey: 'contents' },
-    { build: url => `https://corsproxy.io/?${encodeURIComponent(url)}`,                    isJson: false },
-    { build: url => `https://api.codetabs.com/v1/proxy?quest=${encodeURIComponent(url)}`,  isJson: false },
-    { build: url => `https://proxy.cors.sh/${url}`,                                        isJson: false },
+    { build: url => `https://rio-parana.agustinbotteron.workers.dev/?url=${encodeURIComponent(url)}`,                    isJson: false },
+    { build: url => `https://api.allorigins.win/raw?url=${encodeURIComponent(url)}`,   isJson: false },
+    { build: url => `https://api.allorigins.win/get?url=${encodeURIComponent(url)}`,   isJson: true,  jsonKey: 'contents' },
+    { build: url => `https://corsproxy.io/?${encodeURIComponent(url)}`,                isJson: false },
+    { build: url => `https://api.codetabs.com/v1/proxy?quest=${encodeURIComponent(url)}`, isJson: false },
   ];
 
   async function intentarProxy({ build, isJson, jsonKey }, index) {
