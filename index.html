@@ -83,6 +83,7 @@
     .dot-ok      { background: var(--azul); }
     .dot-loading { background: var(--gris); animation: blink 1s ease-in-out infinite; }
     .dot-error   { background: var(--rojo); }
+    .dot-warn    { background: var(--amarillo); }
     @keyframes blink { 0%,100%{opacity:0.3} 50%{opacity:1} }
     .fecha-txt { font-size: 11px; color: var(--gris); flex: 1; }
     .fuente-pill {
@@ -169,6 +170,8 @@
     .c-baja   { color: var(--verde); }
     .c-sube   { color: var(--rojo); }
     .c-igual  { color: var(--azul); }
+    .c-nd     { color: var(--gris); }
+    .dim      { opacity: 0.55; }
 
     /* barra */
     .barra-wrap { margin-bottom: 11px; }
@@ -218,6 +221,8 @@
     .p-ok    { background: rgba(77,163,255,0.12); color: var(--azul); }
     .p-baja  { background: rgba(76,175,125,0.12); color: var(--verde); }
     .p-alert { background: rgba(255,224,0,0.12);  color: var(--amarillo); }
+    .p-sube  { background: rgba(255,107,107,0.12); color: var(--rojo); }
+    .p-nd    { background: rgba(155,158,164,0.14); color: var(--gris); }
 
     /* ── REFS — solo alerta técnica, una sola card ── */
     .refs-single {
@@ -438,45 +443,43 @@
 </div>
 
 <script>
+
   const ALERTA_TEC = 4.70;  // único umbral del Salado en Recreo
   const MAX_BAR    = 7;
   const CERO_IGN   = 11.09; // cero del hidrómetro Recreo en SRVN71
-  const ESTACION   = 'Recreo (R.P. 70)';  // texto exacto a buscar en col 0
 
   const CIM_URL = 'https://cim.fich.unl.edu.ar/rios/salado/alturas';
 
   // ── PROXIES EN PARALELO ──────────────────────────────────────────────────────
-  // Worker propio primero — es el único que funciona desde GitHub Pages
-  // Los proxies públicos bloquean requests con Origin: agustinbotteron.github.io
+  // Worker propio primero — los proxies públicos suelen bloquear requests con
+  // Origin: agustinbotteron.github.io. OJO: si el Worker tiene una lista blanca
+  // de hosts, tiene que incluir cim.fich.unl.edu.ar.
   const PROXIES = [
-    { build: url => `https://rio-parana.agustinbotteron.workers.dev/?url=${encodeURIComponent(url)}`,                    isJson: false },
+    { build: url => `https://rio-parana.agustinbotteron.workers.dev/?url=${encodeURIComponent(url)}`, isJson: false },
     { build: url => `https://api.allorigins.win/raw?url=${encodeURIComponent(url)}`,   isJson: false },
-    { build: url => `https://api.allorigins.win/get?url=${encodeURIComponent(url)}`,   isJson: true,  jsonKey: 'contents' },
+    { build: url => `https://api.allorigins.win/get?url=${encodeURIComponent(url)}`,   isJson: true, jsonKey: 'contents' },
     { build: url => `https://corsproxy.io/?${encodeURIComponent(url)}`,                isJson: false },
     { build: url => `https://api.codetabs.com/v1/proxy?quest=${encodeURIComponent(url)}`, isJson: false },
   ];
 
   async function intentarProxy({ build, isJson, jsonKey }, index) {
-    const proxyUrl = build(CIM_URL);
-    const res = await fetch(proxyUrl, { signal: AbortSignal.timeout(12000) });
+    const res = await fetch(build(CIM_URL), { signal: AbortSignal.timeout(12000) });
     if (!res.ok) throw new Error('HTTP ' + res.status);
     let text = await res.text();
     if (isJson) {
-      try { const j = JSON.parse(text); text = j[jsonKey] || text; } catch(e) {}
+      try { const j = JSON.parse(text); text = j[jsonKey] || text; } catch (e) {}
     }
     const datos = parsearTabla(text);
-    if (!datos) throw new Error('Parseo sin resultado');
+    if (!datos) throw new Error('No se encontró la fila de Recreo');
     console.log('OK proxy ' + (index + 1));
     return datos;
   }
 
   async function fetchConCascada() {
     try {
-      return await Promise.any(
-        PROXIES.map((proxy, i) => intentarProxy(proxy, i))
-      );
+      return await Promise.any(PROXIES.map((proxy, i) => intentarProxy(proxy, i)));
     } catch (e) {
-      console.warn('Todos los proxies fallaron');
+      console.warn('Todos los proxies fallaron', e && e.errors);
       return null;
     }
   }
@@ -496,105 +499,138 @@
     if (!datos) {
       const eb = document.getElementById('error-bar');
       eb.style.display = 'block';
-      eb.textContent = 'No se pudo conectar con ninguna fuente. Verificá tu conexión e intentá de nuevo.';
+      eb.textContent = 'No se pudo leer la tabla del CIM-FICH (conexión caída o estructura de la página modificada). Intentá de nuevo o consultá la tabla completa más abajo.';
       document.getElementById('btn-retry').style.display = 'block';
       setEstado('error');
+      document.getElementById('fecha-txt').textContent = 'Sin conexión con la fuente';
+      document.getElementById('contenido').style.display = 'none';
       return;
     }
 
     renderizar(datos);
   }
 
-  function parsearTabla(html) {
-    const parser = new DOMParser();
-    const doc    = parser.parseFromString(html, 'text/html');
-    const rows   = doc.querySelectorAll('table tr');
+  // ── PARSER ───────────────────────────────────────────────────────────────────
+  const norm = s => (s || '').toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '').replace(/\s+/g, ' ').trim();
 
-    // Mapear columnas desde el encabezado
-    // Tabla Salado: Estación | Río | Altura | Variación | Cambio | Alt. Ant | Alerta Técnica | Histórico
-    //               col 0    | 1   | 2      | 3         | 4      | 5        | 6              | 7
+  // "2,28" → 2.28 ; "—" / "" / "S/D" → NaN
+  function num(txt) {
+    const m = (txt || '').replace(/\s/g, '').replace(',', '.').match(/-?\d+(\.\d+)?/);
+    return m ? parseFloat(m[0]) : NaN;
+  }
+
+  function parsearTabla(html) {
+    const doc  = new DOMParser().parseFromString(html, 'text/html');
+    const rows = doc.querySelectorAll('table tr');
+
+    // Columnas por defecto (Estación | Río | Altura | Variación | Cambio | Alt. Ant | Alerta Técnica | Histórico)
+    let col = { altura: 2, variacion: 3, altAnt: 5 };
 
     for (const row of rows) {
-      const cells = row.querySelectorAll('td');
-      if (cells.length < 3) continue;
+      const cells = row.querySelectorAll('th, td');
+      const textos = [...cells].map(c => norm(c.textContent));
 
-      // Col 0: Estación — buscar "Recreo"
-      const estacion = cells[0].textContent.trim();
-      if (!estacion.toLowerCase().includes('recreo')) continue;
+      // Fila de encabezado: reasignar índices por nombre si están
+      if (textos.includes('altura') && textos.some(t => t.startsWith('estaci'))) {
+        const i = textos.indexOf('altura');           if (i >= 0) col.altura    = i;
+        const v = textos.indexOf('variacion');        if (v >= 0) col.variacion = v;
+        const a = textos.findIndex(t => t.startsWith('alt. ant')); if (a >= 0) col.altAnt = a;
+        continue;
+      }
 
-      // Col 2: Altura actual
-      const nivel = parseFloat(cells[2].textContent.replace(',', '.').replace(/[^\d.-]/g, '').trim());
-      if (isNaN(nivel)) continue;
+      if (cells.length < 3 || !textos[0].includes('recreo')) continue;
 
-      // Col 5: Altura anterior — fuente primaria para calcular variación
+      const get = i => (cells[i] ? num(cells[i].textContent) : NaN);
+      const alt    = get(col.altura);
+      const altAnt = get(col.altAnt);
+
+      const nivel  = isNaN(alt)    ? null : alt;
+      const previo = isNaN(altAnt) ? null : altAnt;
+
       let variacion = null;
-      if (cells[5]) {
-        const altAnt = parseFloat(cells[5].textContent.replace(',', '.').replace(/[^\d.-]/g, '').trim());
-        if (!isNaN(altAnt)) {
-          // Calcular diferencia: positiva = subiendo, negativa = bajando
-          variacion = parseFloat((nivel - altAnt).toFixed(2));
-        }
-      }
-      // Fallback: col 3 (Variación pre-calculada) si Alt. Ant. no estaba disponible
-      if (variacion === null && cells[3]) {
-        const varRaw = cells[3].textContent.replace(',', '.').replace(/[^\d.+-]/g, '').trim();
-        const parsed = parseFloat(varRaw);
-        if (!isNaN(parsed)) variacion = parsed;
+      if (nivel !== null && previo !== null) {
+        variacion = parseFloat((nivel - previo).toFixed(2));
+      } else if (nivel !== null) {
+        const v = get(col.variacion);
+        if (!isNaN(v)) variacion = v;
       }
 
-      // Fecha: buscar texto con año
-      let fecha = '';
-      doc.querySelectorAll('p, strong, b, td, th').forEach(el => {
-        const t = el.textContent.trim();
-        if ((t.includes('2025') || t.includes('2026') || t.includes('2027')) && t.length < 100) fecha = t;
-      });
+      // Fecha: "Miércoles, 11 de noviembre de 2026"
+      const m = (doc.body ? doc.body.textContent : '').match(
+        /(lunes|martes|mi[eé]rcoles|jueves|viernes|s[aá]bado|domingo),?\s+\d{1,2}\s+de\s+[a-záéíóúñ]+\s+de\s+\d{4}/i
+      );
+      const fecha = m ? m[0].replace(/\s+/g, ' ') : '';
 
-      return { nivel, variacion, fecha };
+      return { nivel, altAnt: previo, variacion, fecha };
     }
     return null;
   }
 
-  function renderizar({ nivel, variacion, fecha }) {
-    document.getElementById('disp-nivel').textContent = nivel.toFixed(2).replace('.', ',');
+  // ── RENDER ───────────────────────────────────────────────────────────────────
+  const fmt = n => n.toFixed(2).replace('.', ',');
 
+  function renderizar({ nivel, altAnt, variacion, fecha }) {
+    const hayNivel = nivel !== null;
+    const valor    = hayNivel ? nivel : altAnt;   // si hoy no hay dato, mostramos la lectura anterior
+    const numEl = document.getElementById('disp-nivel');
+    const ignEl = document.getElementById('disp-ign');
     const varEl = document.getElementById('disp-var');
-    if (variacion !== null && !isNaN(variacion)) {
-      const s      = variacion > 0 ? '+' : '';
-      const flecha  = variacion > 0.005 ? '↑ ' : variacion < -0.005 ? '↓ ' : '→ ';
-      varEl.textContent = flecha + s + variacion.toFixed(2).replace('.', ',') + ' m';
-      varEl.className   = 'var-num ' + (variacion > 0.005 ? 'c-sube' : variacion < -0.005 ? 'c-baja' : 'c-igual');
-    } else {
-      varEl.textContent = '→ 0,00 m';
-      varEl.className   = 'var-num c-igual';
+    const pillEl = document.getElementById('disp-pill');
+    const fill  = document.getElementById('barra-fill');
+    const dot = document.getElementById('fecha-dot');
+    const txt = document.getElementById('fecha-txt');
+
+    // Sin ningún dato (ni actual ni anterior)
+    if (valor === null) {
+      numEl.textContent = '—'; ignEl.textContent = '—';
+      varEl.textContent = 's/d'; varEl.className = 'var-num c-nd';
+      fill.style.width = '0%';
+      pillEl.innerHTML = '<span class="pill p-nd"><span class="pill-d"></span>Sin datos publicados</span>';
+      dot.className = 'fecha-dot dot-error';
+      txt.textContent = 'La fuente no publica dato para Recreo' + (fecha ? ' · ' + fecha : '');
+      return;
     }
 
-    // Barra — max 7 m, marcador de alerta al 67.1% (4.70/7)
-    const pct  = Math.min((nivel / MAX_BAR) * 100, 100).toFixed(1);
-    const fill = document.getElementById('barra-fill');
-    fill.style.width      = pct + '%';
-    fill.style.background = nivel >= ALERTA_TEC ? 'var(--amarillo)' : 'var(--azul)';
+    numEl.textContent = fmt(valor);
+    numEl.classList.toggle('dim', !hayNivel);
+    ignEl.classList.toggle('dim', !hayNivel);
+
+    // Variación (solo si hay lectura de hoy y de ayer)
+    if (hayNivel && variacion !== null) {
+      const s      = variacion > 0 ? '+' : '';
+      const flecha = variacion > 0.005 ? '↑ ' : variacion < -0.005 ? '↓ ' : '→ ';
+      varEl.textContent = flecha + s + fmt(variacion) + ' m';
+      varEl.className   = 'var-num ' + (variacion > 0.005 ? 'c-sube' : variacion < -0.005 ? 'c-baja' : 'c-igual');
+    } else {
+      varEl.textContent = 's/d';
+      varEl.className   = 'var-num c-nd';
+    }
+
+    // Barra — máx 7 m, marcador de alerta al 67.1% (4.70/7)
+    fill.style.width      = Math.min((valor / MAX_BAR) * 100, 100).toFixed(1) + '%';
+    fill.style.background = valor >= ALERTA_TEC ? 'var(--amarillo)' : 'var(--azul)';
 
     // Pill
-    const pillEl = document.getElementById('disp-pill');
-    if (nivel >= ALERTA_TEC) {
+    if (!hayNivel) {
+      pillEl.innerHTML = '<span class="pill p-nd"><span class="pill-d"></span>Sin dato hoy — lectura anterior</span>';
+    } else if (valor >= ALERTA_TEC) {
       pillEl.innerHTML = '<span class="pill p-alert"><span class="pill-d"></span>Nivel de alerta técnica</span>';
     } else {
       const subiendo = variacion !== null && variacion > 0.005;
       const bajando  = variacion !== null && variacion < -0.005;
-      const dir      = subiendo ? 'Subiendo' : bajando ? 'Bajando' : 'Estable';
-      const cls      = subiendo ? 'c-sube'   : bajando  ? 'p-baja'  : 'p-ok';
+      const dir = subiendo ? 'Subiendo' : bajando ? 'Bajando' : variacion === null ? 'Sin variación disponible' : 'Estable';
+      const cls = subiendo ? 'p-sube'   : bajando  ? 'p-baja'  : 'p-ok';
       pillEl.innerHTML = `<span class="pill ${cls}"><span class="pill-d"></span>Nivel del río — ${dir}</span>`;
     }
 
     // IGN
-    const ign = (nivel + CERO_IGN).toFixed(2).replace('.', ',');
-    document.getElementById('disp-ign').textContent = ign;
+    ignEl.textContent = fmt(valor + CERO_IGN);
 
-    // Status bar
-    const dot = document.getElementById('fecha-dot');
-    const txt = document.getElementById('fecha-txt');
-    dot.className  = 'fecha-dot dot-ok';
-    txt.textContent = fecha ? 'Datos: ' + fecha : 'Datos actualizados';
+    // Barra de estado
+    dot.className = 'fecha-dot ' + (hayNivel ? 'dot-ok' : 'dot-warn');
+    txt.textContent = hayNivel
+      ? (fecha ? 'Datos: ' + fecha : 'Datos actualizados')
+      : 'Hoy sin dato publicado · se muestra la lectura anterior' ;
   }
 
   function setEstado(s) {
@@ -603,6 +639,7 @@
   }
 
   cargarDatos();
+
 </script>
 
 </body>
